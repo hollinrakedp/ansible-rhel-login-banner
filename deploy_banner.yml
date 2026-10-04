@@ -1,0 +1,71 @@
+---
+- name: Apply Login Banner
+  hosts: all
+  become: yes
+  vars_files:
+    - vars/banners.yml
+
+  pre_tasks:
+    - name: Determine Banner
+      set_fact:
+        # Allows use of override -e "banner_type=dcsa"
+        banner_type: "{{ banner_type | default(default_banner_type) }}"
+
+    - name: Validate banner_type
+      assert:
+        that:
+          - banner_type in banners
+        fail_msg: >
+          Invalid banner_type '{{ banner_type }}'.
+          Valid options: {{ banners.keys() | list | join(', ') }}
+
+    - name: Set banner text from selected type
+      set_fact:
+        banner_text: "{{ banners[banner_type].text }}"
+
+  tasks:
+    - name: "Set CLI Login Banner (/etc/issue): V-230227, V-257779, V-281227"
+      copy:
+        content: "{{ banner_text }}"
+        dest: /etc/issue
+        mode: '0644'
+
+    - name: "Set SSH Banner (/etc/ssh/banner): V-230225, V-257981, V-281224"
+      block:
+        - name: Create SSH banner file
+          copy:
+            content: "{{ banner_text }}"
+            dest: /etc/ssh/banner
+            mode: '0644'
+        - name: Configure sshd to use banner file
+          lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^#?Banner'
+            line: 'Banner /etc/ssh/banner'
+          notify: Restart sshd
+
+    - name: "Set Graphical Login Banner (Gnome/dconf): V-230226/V-244519, V-270174/V-258012, V-281225/V-281226"
+      block:
+        - name: Ensure dconf directory exists
+          file:
+            path: /etc/dconf/db/local.d
+            state: directory
+          notify: Update dconf
+        - name: Set dconf banner message settings
+          ini_file:
+            path: /etc/dconf/db/local.d/01-banner-message
+            section: org/gnome/login-screen
+            option: "{{ item.option }}"
+            value: "{{ item.value }}"
+          loop:
+            - { option: 'banner-message-enable', value: 'true' }
+            - { option: 'banner-message-text', value: "'{{ banner_text | replace('\n', '\\n') }}'" }
+          notify: Update dconf
+
+  handlers:
+    - name: Restart sshd
+      service:
+        name: sshd
+        state: restarted
+    - name: Update dconf
+      command: dconf update
